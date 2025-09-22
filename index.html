@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>QPath Villi Analyzer</title>
+  <style>
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      margin: 40px;
+      background-color: #001f3f; /* navy */
+      color: white;
+    }
+    h1, h2 {
+      text-align: center;
+      color: #1E90FF; /* blue */
+    }
+    table {
+      border: 2px solid white;
+      border-collapse: collapse;
+      width: 100%;
+      margin-top: 20px;
+      background: white;
+      color: black;
+    }
+    th, td {
+      border: 1px solid black;
+      padding: 6px;
+      text-align: center;
+    }
+    th {
+      background: #f2f2f2;
+    }
+    #controls {
+      margin: 20px auto;
+      text-align: center;
+    }
+    input[type="file"] {
+      display: block;
+      margin: 10px auto;
+      padding: 12px 20px;
+      font-size: 16px;
+      font-weight: bold;
+      color: #001f3f;
+      background-color: white;
+      border: 2px solid #001f3f;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button {
+      margin: 5px;
+      padding: 10px 20px;
+      font-size: 16px;
+      font-weight: bold;
+      color: #001f3f;
+      background: #1E90FF;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #4682B4;
+    }
+  </style>
+</head>
+<body>
+  <h1>QPath Villi Analyzer</h1>
+
+  <div id="controls">
+    <p>Upload your <b>GeoJSON</b> or <b>QPath CSV/TSV/TXT</b> file:</p>
+    <input type="file" id="fileInput" accept=".json,.geojson,.csv,.tsv,.txt">
+    <button onclick="copyToExcel()">Copy Tables to Excel</button>
+    <button onclick="clearAll()">Clear All</button>
+  </div>
+
+  <h2>Summary Table</h2>
+  <table id="summaryTable"></table>
+
+  <h2>Crypt Details Table</h2>
+  <table id="cryptTable"></table>
+
+  <script>
+    const PIXEL_SIZE = 0.1718119; // fallback for GeoJSON
+
+    let villiData = {};
+    let cryptDetails = [];
+
+    document.getElementById("fileInput").addEventListener("change", function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const text = e.target.result.trim();
+
+        if (text.startsWith("{") || text.startsWith("[{")) {
+          // GeoJSON
+          let parsed = JSON.parse(text);
+          let features = parsed.features || parsed;
+          if (Array.isArray(features)) {
+            processGeoJSON(features);
+          }
+        } else {
+          // CSV/TSV/TXT
+          processCSV(text);
+        }
+      };
+      reader.readAsText(file);
+    });
+
+    // -------- GEOJSON PARSER --------
+    function processGeoJSON(features) {
+      features.forEach(feature => {
+        const props = feature.properties || {};
+        const name = props.name || "";
+        const villiMatch = name.match(/Villi(\d+)/i);
+        const villiNum = villiMatch ? parseInt(villiMatch[1]) : null;
+        if (!villiNum) return;
+
+        if (!villiData[villiNum]) {
+          villiData[villiNum] = {
+            villi: villiNum,
+            cryptCount: 0,
+            gobletCount: 0,
+            height: null,
+            width: null
+          };
+        }
+
+        if (/GCcount/i.test(name)) {
+          if (feature.geometry && feature.geometry.type === "MultiPoint") {
+            villiData[villiNum].gobletCount += feature.geometry.coordinates.length;
+          } else {
+            villiData[villiNum].gobletCount += 1;
+          }
+        } else if (/Crypt.*Length/i.test(name) && feature.geometry.type === "LineString") {
+          const length = getLength(feature);
+          if (length !== null) {
+            villiData[villiNum].cryptCount += 1;
+            cryptDetails.push({ villi: villiNum, length: length });
+          }
+        } else if (/Height/i.test(name) && feature.geometry.type === "LineString") {
+          villiData[villiNum].height = getLength(feature);
+        } else if (/Width/i.test(name) && feature.geometry.type === "LineString") {
+          villiData[villiNum].width = getLength(feature);
+        }
+      });
+
+      renderTables();
+    }
+
+    function getLength(feature) {
+      if (feature.geometry && feature.geometry.type === "LineString") {
+        const coords = feature.geometry.coordinates;
+        let total = 0;
+        for (let i = 0; i < coords.length - 1; i++) {
+          const [x1, y1] = coords[i];
+          const [x2, y2] = coords[i + 1];
+          total += Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+        }
+        return total * PIXEL_SIZE;
+      }
+      return null;
+    }
+
+    // -------- CSV/TSV/TXT PARSER --------
+    function processCSV(text) {
+      const rows = text.split(/\r?\n/).map(r => r.split(/\t|,/));
+      const header = rows[0];
+      const data = rows.slice(1);
+
+      const nameIdx = header.indexOf("Name");
+      const lengthIdx = header.indexOf("Length µm");
+
+      data.forEach(row => {
+        const name = row[nameIdx];
+        const length = parseFloat(row[lengthIdx]);
+        if (!name) return;
+
+        const villiMatch = name.match(/Villi(\d+)/i);
+        if (!villiMatch) return;
+        const villiNum = parseInt(villiMatch[1]);
+
+        if (!villiData[villiNum]) {
+          villiData[villiNum] = {
+            villi: villiNum,
+            cryptCount: 0,
+            gobletCount: 0,
+            height: null,
+            width: null
+          };
+        }
+
+        if (/GCcount/i.test(name)) {
+          villiData[villiNum].gobletCount += 1;
+        } else if (/Crypt.*Length/i.test(name)) {
+          villiData[villiNum].cryptCount += 1;
+          if (!isNaN(length)) cryptDetails.push({ villi: villiNum, length: length });
+        } else if (/Height/i.test(name)) {
+          villiData[villiNum].height = length;
+        } else if (/Width/i.test(name)) {
+          villiData[villiNum].width = length;
+        }
+      });
+
+      renderTables();
+    }
+
+    // -------- RENDER TABLES --------
+    function renderTables() {
+      renderSummaryTable();
+      renderCryptTable();
+    }
+
+    function renderSummaryTable() {
+      const table = document.getElementById("summaryTable");
+      table.innerHTML = "";
+
+      const headerRow = document.createElement("tr");
+      ["Villi #", "Crypt # / Villi", "Goblet Cell # / Villi", "Villi Height (µm)", "Villi Width (µm)", "Height/Width"].forEach(col => {
+        const th = document.createElement("th");
+        th.textContent = col;
+        headerRow.appendChild(th);
+      });
+      table.appendChild(headerRow);
+
+      Object.values(villiData).forEach(row => {
+        const tr = document.createElement("tr");
+        const ratio = (row.height && row.width) ? row.height / row.width : "-";
+        [row.villi, row.cryptCount, row.gobletCount, row.height || "-", row.width || "-", ratio].forEach(val => {
+          const td = document.createElement("td");
+          td.textContent = val;
+          tr.appendChild(td);
+        });
+        table.appendChild(tr);
+      });
+    }
+
+    function renderCryptTable() {
+      const table = document.getElementById("cryptTable");
+      table.innerHTML = "";
+
+      const headerRow = document.createElement("tr");
+      ["Villi #", "Crypt Length (µm)"].forEach(col => {
+        const th = document.createElement("th");
+        th.textContent = col;
+        headerRow.appendChild(th);
+      });
+      table.appendChild(headerRow);
+
+      cryptDetails.forEach(row => {
+        const tr = document.createElement("tr");
+        [row.villi, row.length].forEach(val => {
+          const td = document.createElement("td");
+          td.textContent = val;
+          tr.appendChild(td);
+        });
+        table.appendChild(tr);
+      });
+    }
+
+    // -------- UTILITIES --------
+    function copyToExcel() {
+      let text = "";
+
+      const summaryRows = document.querySelectorAll("#summaryTable tr");
+      summaryRows.forEach(tr => {
+        const cols = Array.from(tr.querySelectorAll("th,td")).map(td => td.textContent);
+        text += cols.join("\t") + "\n";
+      });
+
+      text += "\n";
+
+      const cryptRows = document.querySelectorAll("#cryptTable tr");
+      cryptRows.forEach(tr => {
+        const cols = Array.from(tr.querySelectorAll("th,td")).map(td => td.textContent);
+        text += cols.join("\t") + "\n";
+      });
+
+      navigator.clipboard.writeText(text).then(() => {
+        alert("Copied to clipboard! Paste into Excel.");
+      });
+    }
+
+    function clearAll() {
+      villiData = {};
+      cryptDetails = [];
+      document.getElementById("summaryTable").innerHTML = "";
+      document.getElementById("cryptTable").innerHTML = "";
+    }
+  </script>
+</body>
+</html>
